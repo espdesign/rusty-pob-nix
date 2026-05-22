@@ -17,11 +17,9 @@
         pkgs = nixpkgs.legacyPackages.${system};
         craneLib = crane.mkLib pkgs;
 
-        version = "0.2.16";
-
         lzip = pkgs.stdenv.mkDerivation {
           pname = "lzip";
-          inherit version;
+          version = "0.2.16";
           src = "${rusty-path-of-building}/lua/libs/lzip";
 
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -74,7 +72,6 @@
           inherit cargoArtifacts;
 
           pname = "rusty-path-of-building";
-          inherit version;
 
           postInstall = ''
             install -Dm444 ${rusty-path-of-building}/assets/icon.png $out/share/icons/hicolor/256x256/apps/path-of-building.png
