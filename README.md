@@ -4,15 +4,28 @@ Nix flake for [rusty-path-of-building](https://github.com/meehl/rusty-path-of-bu
 
 ## Usage
 
+### Run directly
+
 ```bash
-nix build github:espdesign/rusty-pob-nix
+# Path of Exile 1
+nix run github:espdesign/rusty-pob-nix -- poe1
+
+# Path of Exile 2
+nix run github:espdesign/rusty-pob-nix -- poe2
 ```
 
-Or add to your flake inputs:
+### Install to a NixOS/system configuration
 
 ```nix
-rusty-pob-nix.url = "github:espdesign/rusty-pob-nix";
+{
+  inputs = {
+    rusty-pob-nix.url = "github:espdesign/rusty-pob-nix";
+  };
+  # then add rusty-pob-nix.packages.${system}.default to environment.systemPackages
+}
 ```
+
+Once installed, launch via `rusty-path-of-building poe1` or `rusty-path-of-building poe2`.
 
 ## Maintenance
 
@@ -21,7 +34,7 @@ rusty-pob-nix.url = "github:espdesign/rusty-pob-nix";
 - **rusty-path-of-building** — checked hourly
 - **nixpkgs**, **crane**, **flake-utils** — checked weekly (Monday before 9am)
 
-Renovate opens a PR bumping `flake.lock` when newer commits are found. CI runs `nix flake check` on every PR. Merge if it passes.
+Renovate opens a PR bumping `flake.lock` when newer commits are found. CI runs `nix flake check` + `nix build` on every PR. Merge if it passes.
 
 ### Manual updates
 
