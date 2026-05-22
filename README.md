@@ -14,6 +14,24 @@ nix run github:espdesign/rusty-pob-nix -- poe1
 nix run github:espdesign/rusty-pob-nix -- poe2
 ```
 
+### Run with custom branches, commits, or directories
+
+You can run Path of Building with custom branches, commit hashes, or local folders:
+
+```bash
+# Run with a specific commit hash (downloads to a separate directory, blocks auto-updates)
+nix run github:espdesign/rusty-pob-nix -- poe2 --branch f0ed15fd4e80dba1c276c4fde2e841ced21babc0
+
+# Run with a branch name (e.g. dev)
+nix run github:espdesign/rusty-pob-nix -- poe2 --branch dev
+
+# Force redownload/reinstall of the specified branch or version
+nix run github:espdesign/rusty-pob-nix -- poe2 --branch dev --force-install
+
+# Run using a local directory containing POB's Launch.lua
+nix run github:espdesign/rusty-pob-nix -- poe2 --pob-dir /path/to/local/pob
+```
+
 ### Install to a NixOS/system configuration
 
 ```nix

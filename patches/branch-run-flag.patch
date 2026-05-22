@@ -1,0 +1,259 @@
+diff --git a/src/app.rs b/src/app.rs
+index e40182f..3e3ec1f 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -50,9 +50,20 @@ pub struct App {
+ }
+ 
+ impl App {
+-    pub fn new(game: Game, custom_script_dir: Option<PathBuf>) -> Result<Self> {
++    pub fn new(
++        game: Game,
++        custom_script_dir: Option<PathBuf>,
++        branch: Option<String>,
++        force_install: bool,
++    ) -> Result<Self> {
+         let uses_custom_script_dir = custom_script_dir.is_some();
+-        let script_dir = custom_script_dir.unwrap_or_else(|| game.script_dir());
++        let script_dir = custom_script_dir.unwrap_or_else(|| {
++            if let Some(ref b) = branch {
++                game.data_dir().join("branches").join(b)
++            } else {
++                game.script_dir()
++            }
++        });
+ 
+         let mut state = AppState {
+             window: WindowState::default(),
+@@ -69,7 +80,7 @@ impl App {
+             let pob_mode = PoBMode::new(&mut state)?;
+             AppMode::PoB(pob_mode)
+         } else {
+-            AppMode::Install(InstallMode::new(game))
++            AppMode::Install(InstallMode::new(game, branch, force_install))
+         };
+ 
+         Ok(Self {
+diff --git a/src/args.rs b/src/args.rs
+index a1c46ce..4a05135 100644
+--- a/src/args.rs
++++ b/src/args.rs
+@@ -21,6 +21,18 @@ pub struct Args {
+         help = "URL of build to import on startup. Needs to use custom protocol schema, e.g. `pob://pobbin/<id>`"
+     )]
+     pub import_url: Option<String>,
++
++    /// Specify a branch, tag, or commit hash of Path of Building to run.
++    #[arg(long, help = "Specify the git branch, tag, or commit hash of Path of Building to run")]
++    pub branch: Option<String>,
++
++    /// Specify a custom directory containing POB's Launch.lua to run.
++    #[arg(long, help = "Path to custom Path of Building directory")]
++    pub pob_dir: Option<PathBuf>,
++
++    /// Force redownload/reinstall of the specified branch or version.
++    #[arg(long, help = "Force reinstall of the specified branch or version")]
++    pub force_install: bool,
+ }
+ 
+ /// Enum representing which game (PoE1 or PoE2) the application needs to launch.
+diff --git a/src/installer.rs b/src/installer.rs
+index 070b651..567a431 100644
+--- a/src/installer.rs
++++ b/src/installer.rs
+@@ -48,12 +48,17 @@ pub struct InstallMode {
+ }
+ 
+ impl InstallMode {
+-    pub fn new(game: Game) -> Self {
+-        let script_dir = game.script_dir();
++    pub fn new(game: Game, branch: Option<String>, force_install: bool) -> Self {
+         let (progress_tx, progress_rx) = mpsc::channel();
+ 
+         thread::spawn(move || {
+-            if let Err(err) = install(script_dir.as_path(), game, &progress_tx) {
++            let script_dir = if let Some(ref b) = branch {
++                game.data_dir().join("branches").join(b)
++            } else {
++                game.script_dir()
++            };
++
++            if let Err(err) = install(&script_dir, game, branch, force_install, &progress_tx) {
+                 let _ = progress_tx.send(Progress::Error(err));
+                 return;
+             }
+@@ -159,6 +164,8 @@ fn report(tx: &mpsc::Sender<Progress>, msg: impl Into<String>) {
+ fn install<P: AsRef<Path>>(
+     target_dir: P,
+     game: Game,
++    branch: Option<String>,
++    force_install: bool,
+     progress_tx: &mpsc::Sender<Progress>,
+ ) -> anyhow::Result<()> {
+     let target_dir = target_dir.as_ref();
+@@ -166,29 +173,50 @@ fn install<P: AsRef<Path>>(
+ 
+     let version_file_path = target_dir.join("rpob.version");
+     let current_version = env!("CARGO_PKG_VERSION");
+-    if version_file_path.exists() {
+-        let old_version = fs::read_to_string(&version_file_path)?;
+-        if old_version != current_version {
+-            log::info!("Version changed: {old_version} -> {current_version}");
+-            fs::write(&version_file_path, current_version).unwrap();
++
++    let is_installed = if branch.is_some() {
++        target_dir.join("Launch.lua").exists() && !force_install
++    } else {
++        version_file_path.exists() && !force_install
++    };
++
++    if is_installed {
++        if branch.is_none() && version_file_path.exists() {
++            let old_version = fs::read_to_string(&version_file_path)?;
++            if old_version != current_version {
++                log::info!("Version changed: {old_version} -> {current_version}");
++                fs::write(&version_file_path, current_version).unwrap();
++            }
+         }
+         return Ok(());
+     }
+ 
+-    report(progress_tx, "Fetching compatibility info...");
+-    let compat_info = fetch_compatibility_info(&client, game)?;
+-    let pob_version = highest_supported_pob_version(&compat_info, current_version)
+-        .ok_or_else(|| anyhow::anyhow!("Unable to determine supported PoB version"))?;
+-    log::info!("Using PoB version: {pob_version}");
++    let pob_version = if let Some(ref b) = branch {
++        b.clone()
++    } else {
++        report(progress_tx, "Fetching compatibility info...");
++        let compat_info = fetch_compatibility_info(&client, game)?;
++        let ver = highest_supported_pob_version(&compat_info, current_version)
++            .ok_or_else(|| anyhow::anyhow!("Unable to determine supported PoB version"))?
++            .to_string();
++        log::info!("Using PoB version: {ver}");
++        ver
++    };
+ 
+     report(progress_tx, "Downloading assets...");
+-    download_pob(&client, target_dir, game, pob_version, progress_tx)?;
++    download_pob(&client, target_dir, game, &pob_version, branch.is_some(), progress_tx)?;
+ 
+     report(progress_tx, "Finalizing installation...");
+-    replace_updatecheck(&client, target_dir)?;
+-    set_branch_and_platform(target_dir)?;
++    if branch.is_some() {
++        disable_updatecheck(target_dir)?;
++    } else {
++        replace_updatecheck(&client, target_dir)?;
++    }
++    set_branch_and_platform(target_dir, branch.as_deref())?;
+ 
+-    fs::write(&version_file_path, current_version)?;
++    if branch.is_none() {
++        fs::write(&version_file_path, current_version)?;
++    }
+     log::info!("Installation complete.");
+ 
+     Ok(())
+@@ -255,6 +283,7 @@ fn download_pob<P: AsRef<Path>>(
+     target_dir: P,
+     game: Game,
+     pob_version: &str,
++    is_branch: bool,
+     progress_tx: &mpsc::Sender<Progress>,
+ ) -> anyhow::Result<()> {
+     let target_dir = target_dir.as_ref();
+@@ -291,10 +320,16 @@ fn download_pob<P: AsRef<Path>>(
+         },
+     ];
+ 
++    let tag = if is_branch {
++        pob_version.to_string()
++    } else {
++        format!("v{pob_version}")
++    };
++
+     download_and_extract_tarball(
+         &client,
+         pob_repo,
+-        &format!("v{pob_version}"),
++        &tag,
+         &rules,
+         5,
+         &mut |event| {
+@@ -353,8 +388,30 @@ fn replace_updatecheck<P: AsRef<Path>>(
+     Ok(())
+ }
+ 
++/// Writes a dummy UpdateCheck.lua that does nothing to disable updates
++/// and updates its checksum in manifest.xml.
++fn disable_updatecheck<P: AsRef<Path>>(target_dir: P) -> anyhow::Result<()> {
++    let target_dir = target_dir.as_ref();
++    let file_path = target_dir.join("UpdateCheck.lua");
++    let content = "-- Updates disabled for custom branch/commit\n";
++    fs::write(&file_path, content)?;
++
++    let new_checksum = "31478ad4a2177bab36c93a9dc0e33dc409f79c64";
++    let manifest_path = target_dir.join("manifest.xml");
++    let manifest = fs::read_to_string(&manifest_path)?;
++    let new_manifest = replace_in_matching_lines(
++        &manifest,
++        r#"name="UpdateCheck.lua""#,
++        r#"sha1="([0-9A-Za-z]+)""#,
++        &format!(r#"sha1="{new_checksum}""#),
++    );
++    fs::write(&manifest_path, &new_manifest)?;
++
++    Ok(())
++}
++
+ /// Sets branch and platform in manifest.xml
+-fn set_branch_and_platform<P: AsRef<Path>>(target_dir: P) -> anyhow::Result<()> {
++fn set_branch_and_platform<P: AsRef<Path>>(target_dir: P, branch: Option<&str>) -> anyhow::Result<()> {
+     let path = target_dir.as_ref().join("manifest.xml");
+     let manifest = fs::read_to_string(&path)?;
+ 
+@@ -363,7 +420,8 @@ fn set_branch_and_platform<P: AsRef<Path>>(target_dir: P) -> anyhow::Result<()>
+     #[cfg(not(target_os = "windows"))]
+     let platform = std::env::consts::OS;
+ 
+-    let replacement = format!(r#"<Version branch="master" platform="{platform}""#);
++    let branch_name = branch.unwrap_or("master");
++    let replacement = format!(r#"<Version branch="{branch_name}" platform="{platform}""#);
+     let new_manifest = MANIFEST_VERSION_RE.replace(&manifest, replacement);
+     fs::write(&path, new_manifest.as_ref())?;
+ 
+diff --git a/src/installer/download.rs b/src/installer/download.rs
+index 586f3ea..7e46195 100644
+--- a/src/installer/download.rs
++++ b/src/installer/download.rs
+@@ -131,7 +131,7 @@ pub fn download_and_extract_tarball(
+     max_retries: u32,
+     on_progress: &mut impl FnMut(DownloadEvent),
+ ) -> Result<(), GithubError> {
+-    let url = format!("https://github.com/{repo_name}/archive/refs/tags/{tag}.tar.gz");
++    let url = format!("https://github.com/{repo_name}/archive/{tag}.tar.gz");
+ 
+     let tmp_path =
+         std::env::temp_dir().join(format!("gh-{}-{}.tar.gz", repo_name.replace('/', "-"), tag));
+diff --git a/src/main.rs b/src/main.rs
+index 39e2f77..5267f5b 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -38,9 +38,13 @@ fn main() -> anyhow::Result<()> {
+     };
+ 
+     let args = Args::parse();
+-    let script_dir = find_nearby_launch_script();
++    let script_dir = args
++        .pob_dir
++        .clone()
++        .map(|p| p.canonicalize().unwrap_or(p))
++        .or_else(find_nearby_launch_script);
+ 
+-    let mut app = App::new(args.game, script_dir)?;
++    let mut app = App::new(args.game, script_dir, args.branch, args.force_install)?;
+ 
+     let event_loop = EventLoop::with_user_event().build()?;
+     event_loop.run_app(&mut app)?;

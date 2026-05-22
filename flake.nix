@@ -73,6 +73,8 @@
 
           pname = "rusty-path-of-building";
 
+          patches = [ ./patches/branch-run-flag.patch ];
+
           postInstall = ''
             install -Dm444 ${rusty-path-of-building}/assets/icon.png $out/share/icons/hicolor/256x256/apps/path-of-building.png
           '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
