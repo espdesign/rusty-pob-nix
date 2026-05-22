@@ -10,10 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: nix-community/nix-install-action@v5
-      - uses: actions/cache@v4
-        with:
-          path: /nix
-          key: ${{ runner.os }}-nix-${{ hashFiles('**/flake.lock') }}
+      - uses: cachix/install-nix-action@v30
 
       - run: nix flake check
