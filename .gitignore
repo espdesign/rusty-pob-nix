@@ -1,0 +1,8 @@
+# Antigravity CLI and Gemini files
+.antigravitycli
+antigravity
+
+# Nix build outputs and results
+result
+result*
+results
