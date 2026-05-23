@@ -1,8 +1,29 @@
+diff --git a/src/api/paths.rs b/src/api/paths.rs
+index f39bd49..4b77941 100644
+--- a/src/api/paths.rs
++++ b/src/api/paths.rs
+@@ -8,7 +8,7 @@ use crate::{
+ 
+ pub fn get_user_path(l: &Lua, _: ()) -> LuaResult<PathBuf> {
+     let ctx = l.app_data_ref::<&'static Context>().unwrap();
+-    Ok(ctx.script_dir().join("userdata"))
++    Ok(ctx.user_dir().to_owned())
+ }
+ 
+ // parent directory of Launch.lua script
 diff --git a/src/app.rs b/src/app.rs
-index e40182f..3e3ec1f 100644
+index e40182f..dc128b8 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -50,9 +50,20 @@ pub struct App {
+@@ -29,6 +29,7 @@ pub struct AppState {
+     pub fonts: Fonts,
+     pub texture_manager: WrappedTextureManager,
+     pub script_dir: PathBuf,
++    pub user_dir: PathBuf,
+     pub should_exit: bool,
+ }
+ 
+@@ -50,9 +51,25 @@ pub struct App {
  }
  
  impl App {
@@ -22,10 +43,23 @@ index e40182f..3e3ec1f 100644
 +                game.script_dir()
 +            }
 +        });
++        let user_dir = if branch.is_some() {
++            game.data_dir().join("userdata")
++        } else {
++            script_dir.join("userdata")
++        };
  
          let mut state = AppState {
              window: WindowState::default(),
-@@ -69,7 +80,7 @@ impl App {
+@@ -60,6 +77,7 @@ impl App {
+             fonts: Fonts::new(pob_font_definitions()),
+             texture_manager: WrappedTextureManager::new(),
+             script_dir,
++            user_dir,
+             should_exit: false,
+         };
+ 
+@@ -69,7 +87,7 @@ impl App {
              let pob_mode = PoBMode::new(&mut state)?;
              AppMode::PoB(pob_mode)
          } else {
@@ -237,6 +271,50 @@ index 586f3ea..7e46195 100644
  
      let tmp_path =
          std::env::temp_dir().join(format!("gh-{}-{}.tar.gz", repo_name.replace('/', "-"), tag));
+diff --git a/src/lua.rs b/src/lua.rs
+index d47ca98..e0634c3 100644
+--- a/src/lua.rs
++++ b/src/lua.rs
+@@ -49,6 +49,7 @@ pub struct Context {
+     fonts: Cell<*mut Fonts>,
+     texture_manager: Cell<*mut WrappedTextureManager>,
+     script_dir: Cell<*const PathBuf>,
++    user_dir: Cell<*const PathBuf>,
+     current_working_dir: Cell<*mut PathBuf>,
+     layers: Cell<*mut Layers>,
+     needs_restart: Cell<*mut bool>,
+@@ -64,6 +65,7 @@ impl Context {
+             fonts: Cell::new(std::ptr::null_mut()),
+             texture_manager: Cell::new(std::ptr::null_mut()),
+             script_dir: Cell::new(std::ptr::null()),
++            user_dir: Cell::new(std::ptr::null()),
+             current_working_dir: Cell::new(std::ptr::null_mut()),
+             layers: Cell::new(std::ptr::null_mut()),
+             needs_restart: Cell::new(std::ptr::null_mut()),
+@@ -78,6 +80,7 @@ impl Context {
+         self.fonts.set(&mut ctx.app.fonts);
+         self.texture_manager.set(&mut ctx.app.texture_manager);
+         self.script_dir.set(&mut ctx.app.script_dir);
++        self.user_dir.set(&mut ctx.app.user_dir);
+         self.current_working_dir
+             .set(&mut ctx.pob.current_working_dir);
+         self.layers.set(&mut ctx.pob.layers);
+@@ -92,6 +95,7 @@ impl Context {
+         self.fonts.set(std::ptr::null_mut());
+         self.texture_manager.set(std::ptr::null_mut());
+         self.script_dir.set(std::ptr::null());
++        self.user_dir.set(std::ptr::null());
+         self.current_working_dir.set(std::ptr::null_mut());
+         self.layers.set(std::ptr::null_mut());
+         self.needs_restart.set(std::ptr::null_mut());
+@@ -104,6 +108,7 @@ impl Context {
+     ctx_accessor!(fonts: &mut Fonts);
+     ctx_accessor!(texture_manager: &mut WrappedTextureManager);
+     ctx_accessor!(script_dir: &PathBuf);
++    ctx_accessor!(user_dir: &PathBuf);
+     ctx_accessor!(current_working_dir: &mut PathBuf);
+     ctx_accessor!(layers: &mut Layers);
+     ctx_accessor!(needs_restart: &mut bool);
 diff --git a/src/main.rs b/src/main.rs
 index 39e2f77..5267f5b 100644
 --- a/src/main.rs
