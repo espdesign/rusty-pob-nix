@@ -259,18 +259,155 @@ index 070b651..567a431 100644
      fs::write(&path, new_manifest.as_ref())?;
  
 diff --git a/src/installer/download.rs b/src/installer/download.rs
-index 586f3ea..7e46195 100644
+index 586f3ea..11210a4 100644
 --- a/src/installer/download.rs
 +++ b/src/installer/download.rs
-@@ -131,7 +131,7 @@ pub fn download_and_extract_tarball(
+@@ -131,55 +131,88 @@ pub fn download_and_extract_tarball(
      max_retries: u32,
      on_progress: &mut impl FnMut(DownloadEvent),
  ) -> Result<(), GithubError> {
 -    let url = format!("https://github.com/{repo_name}/archive/refs/tags/{tag}.tar.gz");
+-
+-    let tmp_path =
+-        std::env::temp_dir().join(format!("gh-{}-{}.tar.gz", repo_name.replace('/', "-"), tag));
+-
+-    // Download to temp file
+-    with_retry(max_retries, Duration::from_secs(5), |attempt| {
+-        if attempt > 0 {
+-            on_progress(DownloadEvent::Retrying { attempt });
 +    let url = format!("https://github.com/{repo_name}/archive/{tag}.tar.gz");
++
++    // Resolve cache directory (~/.cache/rusty-path-of-building/tarballs/)
++    let cache_dir = directories::BaseDirs::new()
++        .map(|dirs| dirs.cache_dir().join("rusty-path-of-building").join("tarballs"))
++        .unwrap_or_else(|| std::env::temp_dir());
++    let cache_path = cache_dir.join(format!("{}-{}.tar.gz", repo_name.replace('/', "-"), tag));
++
++    // Determine if the tag/reference is immutable (commit hash or version tag)
++    let is_commit_hash = tag.len() == 40 && tag.chars().all(|c| c.is_ascii_hexdigit());
++    let is_version_tag = tag.starts_with('v') && tag.chars().nth(1).map_or(false, |c| c.is_ascii_digit());
++    let is_immutable = is_commit_hash || is_version_tag;
++
++    let use_cached = is_immutable && cache_path.exists();
++    let download_path = if is_immutable {
++        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
++            log::warn!("Failed to create cache directory {:?}: {}", cache_dir, e);
+         }
++        cache_dir.join(format!("{}-{}.tar.gz.tmp", repo_name.replace('/', "-"), tag))
++    } else {
++        std::env::temp_dir().join(format!("gh-{}-{}.tar.gz", repo_name.replace('/', "-"), tag))
++    };
++
++    if !use_cached {
++        // Download to temp file
++        with_retry(max_retries, Duration::from_secs(5), |attempt| {
++            if attempt > 0 {
++                on_progress(DownloadEvent::Retrying { attempt });
++            }
  
-     let tmp_path =
-         std::env::temp_dir().join(format!("gh-{}-{}.tar.gz", repo_name.replace('/', "-"), tag));
+-        let response = get_checked(client, &url)?;
+-        let content_length = response.content_length();
+-
+-        let mut tmp_file = File::create(&tmp_path)?;
+-        const CHUNK_SIZE: usize = 512 * 1024;
+-        let mut chunk = vec![0u8; CHUNK_SIZE];
+-        let mut downloaded: u64 = 0;
+-        let mut body = response;
++            let response = get_checked(client, &url)?;
++            let content_length = response.content_length();
++
++            let mut tmp_file = File::create(&download_path)?;
++            const CHUNK_SIZE: usize = 512 * 1024;
++            let mut chunk = vec![0u8; CHUNK_SIZE];
++            let mut downloaded: u64 = 0;
++            let mut body = response;
++
++            let mut last_progress = Instant::now();
++            const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
++
++            loop {
++                let n = body.read(&mut chunk)?;
++                if n == 0 {
++                    break;
++                }
++                tmp_file.write_all(&chunk[..n])?;
++                downloaded += n as u64;
++
++                if last_progress.elapsed() >= PROGRESS_INTERVAL {
++                    on_progress(DownloadEvent::Progress {
++                        downloaded,
++                        total: content_length,
++                    });
++                    last_progress = Instant::now();
++                }
++            }
++            on_progress(DownloadEvent::Progress {
++                downloaded,
++                total: content_length,
++            });
+ 
+-        let mut last_progress = Instant::now();
+-        const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
++            Ok(())
++        })?;
+ 
+-        loop {
+-            let n = body.read(&mut chunk)?;
+-            if n == 0 {
+-                break;
+-            }
+-            tmp_file.write_all(&chunk[..n])?;
+-            downloaded += n as u64;
+-
+-            if last_progress.elapsed() >= PROGRESS_INTERVAL {
+-                on_progress(DownloadEvent::Progress {
+-                    downloaded,
+-                    total: content_length,
+-                });
+-                last_progress = Instant::now();
++        if is_immutable {
++            if let Err(e) = std::fs::rename(&download_path, &cache_path) {
++                log::warn!("Failed to rename temporary download to cache path: {}", e);
+             }
+         }
+-        on_progress(DownloadEvent::Progress {
+-            downloaded,
+-            total: content_length,
+-        });
+-
+-        Ok(())
+-    })?;
++    }
+ 
+     // Extract tarball to destination based on extract rules
+-    let tmp_file = File::open(&tmp_path)?;
++    let archive_path = if use_cached {
++        &cache_path
++    } else if is_immutable && cache_path.exists() {
++        &cache_path
++    } else {
++        &download_path
++    };
++    let tmp_file = File::open(archive_path)?;
+     let gz = GzDecoder::new(io::BufReader::new(tmp_file));
+     let mut archive = Archive::new(gz);
+ 
+@@ -218,10 +251,13 @@ pub fn download_and_extract_tarball(
+         }
+     }
+ 
+-    fs::remove_file(&tmp_path)?;
++    if !is_immutable {
++        fs::remove_file(&download_path)?;
++    } else if download_path.exists() {
++        let _ = fs::remove_file(&download_path);
++    }
+     Ok(())
+ }
+-
+ #[derive(Debug)]
+ pub enum GithubError {
+     Http { status: u16, url: String },
 diff --git a/src/lua.rs b/src/lua.rs
 index d47ca98..e0634c3 100644
 --- a/src/lua.rs
